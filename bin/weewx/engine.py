@@ -58,6 +58,9 @@ class StdEngine(object):
         """Initialize an instance of StdEngine.
         
         config_dict: The configuration dictionary. """
+
+        self.debug_memory = to_bool(config_dict.get('debug_memory', False))
+
         # Set a default socket time out, in case FTP or HTTP hang:
         timeout = int(config_dict.get('socket_timeout', 20))
         socket.setdefaulttimeout(timeout)
@@ -153,6 +156,16 @@ class StdEngine(object):
     def run(self):
         """Main execution entry point."""
         
+        if self.debug_memory:
+            syslog.syslog(syslog.LOG_INFO, "engine: Running memory summaries")
+            try:
+                os.remove('/var/tmp/weewx_memory_summary')
+            except OSError:
+                pass
+            from pympler import summary, muppy
+            # track_obj = tracker.SummaryTracker()
+            start_memory = summary.summarize(muppy.get_objects())
+
         # Wrap the outer loop in a try block so we can do an orderly shutdown
         # should an exception occur:
         try:
@@ -200,6 +213,16 @@ class StdEngine(object):
                     
                     # Send out an event saying the packet LOOP is done:
                     self.dispatchEvent(weewx.Event(weewx.POST_LOOP))
+
+                if self.debug_memory:
+                    current_memory = summary.summarize(muppy.get_objects())
+                    diff = summary.get_diff(start_memory, current_memory)
+                    with open('/var/tmp/weewx_memory_summary', 'a') as fd:
+                        fd.write(60*'*' + "\n")
+                        fd.write("Memory summary for %s\n" % time.asctime())
+                        for line in summary.format_(diff, limit=15, sort='size', order='descending'):
+                            fd.write(line + '\n')
+                        fd.write('\n')
 
         finally:
             # The main loop has exited. Shut the engine down.
