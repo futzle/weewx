@@ -47,6 +47,9 @@ class RetriesExceeded(WeeWxIOError):
 class HardwareError(Exception):
     """Exception thrown when an error is detected in the hardware."""
     
+class UnknownLoopType(HardwareError):
+    """Exception thrown after reading an unrecognized loop type."""
+
 class UnknownArchiveType(HardwareError):
     """Exception thrown after reading an unrecognized archive type."""
 

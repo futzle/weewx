@@ -467,6 +467,7 @@ class Vantage(weewx.drivers.AbstractDevice):
         syslog.syslog(syslog.LOG_DEBUG, 'vantage: Driver version is %s' % DRIVER_VERSION)
 
         self.hardware_type = None
+        self.firmware_version = None
 
         # These come from the configuration dictionary:
         self.max_tries  = int(vp_dict.get('max_tries', 4))
@@ -528,7 +529,11 @@ class Vantage(weewx.drivers.AbstractDevice):
         self.port.wakeup_console(self.max_tries)
         
         # Request N packets:
-        self.port.send_data(b"LOOP %d\n" % N)
+        if self.firmware_version > "1.90":
+            loop_type = 3
+            self.port.send_data(b"LPS %d %d\n" % (loop_type, N))
+        else:
+            self.port.send_data(b"LOOP %d\n" % N)
 
         for loop in range(N):  # @UnusedVariable
             # Fetch a packet...
@@ -1286,6 +1291,10 @@ class Vantage(weewx.drivers.AbstractDevice):
             if self.hardware_type == 17:
                 self.model_type = 2
 
+        # Get firmware version.
+        if self.firmware_version is None:
+            self.firmware_version = self.getFirmwareVersion()
+
         unit_bits              = self._getEEPROM_value(0x29)[0]
         setup_bits             = self._getEEPROM_value(0x2B)[0]
         self.rain_year_start   = self._getEEPROM_value(0x2C)[0]
@@ -1408,12 +1417,26 @@ class Vantage(weewx.drivers.AbstractDevice):
         A dictionary. The key will be an observation type, the value will be
         the observation in physical units."""
     
+        # Is it a LOOP or LOOP2 packet?
+        packet_type = ord(raw_loop_string[4])
+        
+        if packet_type == 0x00:
+            # LOOP packet:
+            loop_format = loop_fmt
+            loop_names = loop_types
+        elif packet_type == 0x01:
+            # LOOP2 packet:
+            loop_format = loop2_fmt
+            loop_names = loop2_types
+        else:
+            raise weewx.UnknownLoopType("Unknown loop type = 0x%x" % (packet_type,)) 
+
         # Unpack the data, using the compiled stuct.Struct string 'loop_fmt'
-        data_tuple = loop_fmt.unpack(raw_loop_string)
+        data_tuple = loop_format.unpack(raw_loop_string)
 
         # Put the results in a dictionary. The values will not be in physical units yet,
         # but rather using the raw values from the console.
-        raw_loop_packet = dict(list(zip(loop_types, data_tuple)))
+        raw_loop_packet = dict(list(zip(loop_names, data_tuple)))
     
         # Detect the kind of LOOP packet. Type 'A' has the character 'P' in this
         # position. Type 'B' contains the 3-hour barometer trend in this position.
@@ -1438,22 +1461,25 @@ class Vantage(weewx.drivers.AbstractDevice):
                 if val is not None:
                     loop_packet[_type] = val
             
-        # Adjust sunrise and sunset:
+        # Adjust sunrise and sunset, only in LOOP packet:
         start_of_day = weeutil.weeutil.startOfDay(loop_packet['dateTime'])
-        loop_packet['sunrise'] += start_of_day
-        loop_packet['sunset']  += start_of_day
+        if 'sunrise' in loop_packet:
+            loop_packet['sunrise'] += start_of_day
+        if 'sunset' in loop_packet:
+            loop_packet['sunset']  += start_of_day
         
         # Because the Davis stations do not offer bucket tips in LOOP data, we
         # must calculate it by looking for changes in rain totals. This won't
         # work for the very first rain packet.
-        if self.save_monthRain is None:
-            delta = None
-        else:
-            delta = loop_packet['monthRain'] - self.save_monthRain
-            # If the difference is negative, we're at the beginning of a month.
-            if delta < 0: delta = None
-        loop_packet['rain'] = delta
-        self.save_monthRain = loop_packet['monthRain']
+        if 'monthRain' in loop_packet:
+            if self.save_monthRain is None:
+                delta = None
+            else:
+                delta = loop_packet['monthRain'] - self.save_monthRain
+                # If the difference is negative, we're at the beginning of a month.
+                if delta < 0: delta = None
+            loop_packet['rain'] = delta
+            self.save_monthRain = loop_packet['monthRain']
 
         return loop_packet
     
@@ -1532,9 +1558,29 @@ loop_format = [('loop',              '3s'), ('loop_type',          'b'), ('packe
                ('txBatteryStatus',    'B'), ('consBatteryVoltage', 'H'), ('forecastIcon',       'B'),
                ('forecastRule',       'B'), ('sunrise',            'H'), ('sunset',             'H')]
 
+loop2_format = [('loop',             '3s'), ('loop_type',          'b'), ('packet_type',        'B'),
+                ('__',                'H'), ('barometer',          'H'), ('inTemp',             'h'),
+                ('inHumidity',        'B'), ('outTemp',            'h'), ('windSpeed',          'B'),
+                ('__',                'B'), ('windDir',            'H'), ('windSpeed10_10',     'H'),
+                ('windSpeed2',        'H'), ('windGust10',         'H'), ('windDirGust10',      'H'),
+                ('__',                'L'), ('dewpoint',           'h'), ('__',                 'B'),
+                ('outHumidity',       'B'), ('__',                 'B'), ('heatindex',          'h'),
+                ('windchill',         'h'), ('thswindex',          'h'), ('rainRate',           'H'),
+                ('UV',                'B'), ('radiation',          'H'), ('stormRain',          'H'),
+                ('stormStart',        'H'), ('dayRain',            'H'), ('rain15',             'H'),
+                ('rain1h',            'H'), ('dayET',              'H'), ('rain24h',            'H'),
+                ('barReduction',      'B'), ('barOffset',          'H'), ('barCal',             'H'),
+                ('barRaw',            'H'), ('barAbsolute',        'H'), ('altimeter',          'H'),
+                ('__',                'H'), ('graphWind10',        'B'), ('graphWind15',        'B'),
+                ('graphWind1h',       'B'), ('graphWind24h',       'B'), ('graphRain1',         'B'),
+                ('graphStorm',        'B'), ('minuteInHour',       'B'), ('graphRainMonth',     'B'),
+                ('graphRainYear',     'B'), ('graphRainSeason',    'B'), ('__',               '12b')]
+
 # Extract the types and struct.Struct formats for the LOOP packets:
 loop_types, fmt = list(zip(*loop_format))
 loop_fmt = struct.Struct('<' + ''.join(fmt))
+loop2_types, fmt2 = list(zip(*loop2_format))
+loop2_fmt = struct.Struct('<' + ''.join(fmt2))
 
 #===============================================================================
 #                              archive packet
@@ -1704,7 +1750,15 @@ _loop_map = {'barometer'       : _val1000Zero,
              'outTemp'         : _big_val10,
              'windSpeed'       : _little_val,
              'windSpeed10'     : _little_val,
+             'windSpeed10_10'  : _big_val10,
+             'windGust10'      : _big_val10,
+             'windSpeed2'      : _big_val10,
              'windDir'         : _big_val,
+             'windDirGust10'   : _big_val,
+             'dewpoint'        : _little_val,
+             'heatindex'       : _little_val,
+             'windchill'       : _little_val,
+             'thswindex'       : _little_val,
              'extraTemp1'      : _little_temp,
              'extraTemp2'      : _little_temp,
              'extraTemp3'      : _little_temp,
