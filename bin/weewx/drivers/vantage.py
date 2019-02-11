@@ -529,10 +529,12 @@ class Vantage(weewx.drivers.AbstractDevice):
         self.port.wakeup_console(self.max_tries)
         
         # Request N packets:
-        if self.firmware_version > "1.90":
+        if self.firmware_version >= "1.90":
+            # Newer firmwares can request LOOP and LOOP2 packets.
             loop_type = 3
             self.port.send_data(b"LPS %d %d\n" % (loop_type, N))
         else:
+            # Older firmwares don't understand the LPS command.
             self.port.send_data(b"LOOP %d\n" % N)
 
         for loop in range(N):  # @UnusedVariable
